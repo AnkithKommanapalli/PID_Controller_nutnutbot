@@ -5,35 +5,21 @@ import csv
 import os
 
 # --- TEST CONFIGURATION ---
-TARGET_SPEED_MPS = 0.4  # Target speed in m/s
-DURATION = 4.0          # Maximum duration of the test in seconds
-LOOP_DELAY = 0.001       # Delay between readings (0.05s = 20 Hz)
+TARGET_SPEED_MPS = 0.5
+  # Target speed in m/s
+DURATION = 3.0          # Maximum duration of the test in seconds
+LOOP_DELAY = 0.05       # Delay between readings (0.05s = 20 Hz)
 
 # --- PI CONTROLLER CONSTANTS ---
 # Left Motor
-# Kp_L = 1400
-# Ki_L = 3846
-# # Right Motor
-# Kp_R = 1227
-# Ki_R = 5555
-
-
-# Kp_R = 657.7
-# Ki_R= 1923.1
-# Kp_L= 725.9
-# Ki_L = 2777.7
-
-
-
-Kp_R = 749
-Ki_R= 2637
-Kp_L= 690
-Ki_L = 1921
-
-
+Kp_L = 1315
+Ki_L = 3846
+# Right Motor
+Kp_R = 1227
+Ki_R = 5555
 
 PWM_MIN = 0
-PWM_MAX = 220
+PWM_MAX = 250
 
 # --- KINEMATICS CONSTANTS ---
 PPR = 4096
@@ -59,7 +45,7 @@ def get_tick_delta(curr, prev):
 
 def send_pwm(pwm_left, pwm_right):
     # Send independent PWM to Teensy on Bus 0
-    # Assuming Index 4 is Left, Index 6 is Right. Swap if needed!
+    # SWAPPED: Index 4 is now Right, Index 6 is now Left to match the physical wiring
     tx_frame = [0, 1, 0, 1, int(pwm_right), 0, int(pwm_left), 0]
     spi_pwm.xfer2(tx_frame)
 
@@ -80,24 +66,14 @@ def get_odometry_counts():
 if __name__ == "__main__":
     # --- PREPARE DATA STORAGE ---
     script_dir = os.path.dirname(os.path.abspath(__file__))
-    base_filename = f"PID_{TARGET_SPEED_MPS}mps_{DURATION}s"
-    
-    # Start with run number 1
-    run_number = 1
-    filename = f"{base_filename}_run{run_number}.csv"
+    timestamp = time.strftime("%Y%m%d_%H%M%S")
+    filename = f"pid_speed_{TARGET_SPEED_MPS}mps_dur{DURATION}s_{timestamp}.csv"
     filepath = os.path.join(script_dir, filename)
-
-    # If the file exists, increment the run number until we find an available filename
-    while os.path.exists(filepath):
-        run_number += 1
-        filename = f"{base_filename}_run{run_number}.csv"
-        filepath = os.path.join(script_dir, filename)
 
     data_log = []
 
     try:
         print(f"Starting PI Control: Target = {TARGET_SPEED_MPS} m/s, Duration = {DURATION} seconds")
-        print(f"Data will be saved to: {filename}")
         
         # 1. Initial dummy reads and safety stop
         send_pwm(0, 0)
@@ -147,15 +123,20 @@ if __name__ == "__main__":
                 error_L = TARGET_SPEED_MPS - speed_left_mps
                 error_R = TARGET_SPEED_MPS - speed_right_mps
                 
-                # 2. Accumulate Integral (No Anti-Windup)
+                # 2. Accumulate Integral
                 integral_L += error_L * dt
                 integral_R += error_R * dt
                 
-                # 3. Calculate Control Effort
+                # 3. Anti-Windup (Clamp integral term)
+                # Prevent integral from asking for more than 100% of PWM_MAX on its own
+                integral_L = max(-PWM_MAX/Ki_L, min(PWM_MAX/Ki_L, integral_L))
+                integral_R = max(-PWM_MAX/Ki_R, min(PWM_MAX/Ki_R, integral_R))
+                
+                # 4. Calculate Control Effort
                 u_L = (Kp_L * error_L) + (Ki_L * integral_L)
                 u_R = (Kp_R * error_R) + (Ki_R * integral_R)
                 
-                # 4. Clamp Output to valid PWM range (0 to 255/PWM_MAX)
+                # 5. Clamp Output to valid PWM range (0 to 255/PWM_MAX)
                 pwm_L = max(PWM_MIN, min(PWM_MAX, u_L))
                 pwm_R = max(PWM_MIN, min(PWM_MAX, u_R))
                 
