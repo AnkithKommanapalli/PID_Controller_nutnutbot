@@ -5,18 +5,16 @@ import csv
 import os
 
 # --- TEST CONFIGURATION ---
-TARGET_SPEED_MPS = 0.5
-  # Target speed in m/s
-DURATION = 3.0          # Maximum duration of the test in seconds
-LOOP_DELAY = 0.05       # Delay between readings (0.05s = 20 Hz)
+TARGET_SPEED_MPS = 0.5  # Target speed in m/s
+RAMP_DURATION = 0.4     # Duration of the initial speed ramp in seconds
+DURATION = 6.0          # Maximum duration of the test in seconds
+LOOP_DELAY = 0.001       # Delay between readings (0.05s = 20 Hz)
 
-# --- PI CONTROLLER CONSTANTS ---
-# Left Motor
-Kp_L = 1315
-Ki_L = 3846
-# Right Motor
-Kp_R = 1227
-Ki_R = 5555
+Kp_R = 749
+Ki_R= 2637
+Kp_L= 690
+Ki_L = 1921
+
 
 PWM_MIN = 0
 PWM_MAX = 250
@@ -45,7 +43,7 @@ def get_tick_delta(curr, prev):
 
 def send_pwm(pwm_left, pwm_right):
     # Send independent PWM to Teensy on Bus 0
-    # SWAPPED: Index 4 is now Right, Index 6 is now Left to match the physical wiring
+    # Assuming Index 4 is Left, Index 6 is Right. Swap if needed!
     tx_frame = [0, 1, 0, 1, int(pwm_right), 0, int(pwm_left), 0]
     spi_pwm.xfer2(tx_frame)
 
@@ -66,8 +64,7 @@ def get_odometry_counts():
 if __name__ == "__main__":
     # --- PREPARE DATA STORAGE ---
     script_dir = os.path.dirname(os.path.abspath(__file__))
-    timestamp = time.strftime("%Y%m%d_%H%M%S")
-    filename = f"pid_speed_{TARGET_SPEED_MPS}mps_dur{DURATION}s_{timestamp}.csv"
+    filename = f"PID_{TARGET_SPEED_MPS}mps_dur{DURATION}s_ramp.csv"
     filepath = os.path.join(script_dir, filename)
 
     data_log = []
@@ -117,26 +114,27 @@ if __name__ == "__main__":
                 # Calculate current speed
                 speed_right_mps = (delta_ticks_right * METERS_PER_TICK) / dt
                 speed_left_mps  = (delta_ticks_left  * METERS_PER_TICK) / dt
+
+                # Calculate current target speed based on ramp
+                if elapsed_total < RAMP_DURATION:
+                    current_target = TARGET_SPEED_MPS * (elapsed_total / RAMP_DURATION)
+                else:
+                    current_target = TARGET_SPEED_MPS
                 
                 # --- PI CONTROLLER CALCULATION ---
-                # 1. Calculate Error
-                error_L = TARGET_SPEED_MPS - speed_left_mps
-                error_R = TARGET_SPEED_MPS - speed_right_mps
+                # 1. Calculate Error (using current_target instead of TARGET_SPEED_MPS directly)
+                error_L = current_target - speed_left_mps
+                error_R = current_target - speed_right_mps
                 
-                # 2. Accumulate Integral
+                # 2. Accumulate Integral (No Anti-Windup)
                 integral_L += error_L * dt
                 integral_R += error_R * dt
                 
-                # 3. Anti-Windup (Clamp integral term)
-                # Prevent integral from asking for more than 100% of PWM_MAX on its own
-                integral_L = max(-PWM_MAX/Ki_L, min(PWM_MAX/Ki_L, integral_L))
-                integral_R = max(-PWM_MAX/Ki_R, min(PWM_MAX/Ki_R, integral_R))
-                
-                # 4. Calculate Control Effort
+                # 3. Calculate Control Effort
                 u_L = (Kp_L * error_L) + (Ki_L * integral_L)
                 u_R = (Kp_R * error_R) + (Ki_R * integral_R)
                 
-                # 5. Clamp Output to valid PWM range (0 to 255/PWM_MAX)
+                # 4. Clamp Output to valid PWM range (0 to 255/PWM_MAX)
                 pwm_L = max(PWM_MIN, min(PWM_MAX, u_L))
                 pwm_R = max(PWM_MIN, min(PWM_MAX, u_R))
                 
@@ -145,12 +143,13 @@ if __name__ == "__main__":
                 
                 # Print live stats to console
                 print(f"Time: {elapsed_total:4.2f}s | "
+                      f"Target: {current_target:5.2f} | "
                       f"LEFT Spd: {speed_left_mps:5.2f} (PWM: {int(pwm_L):3}) | "
                       f"RIGHT Spd: {speed_right_mps:5.2f} (PWM: {int(pwm_R):3})")
                 
                 # Save to RAM buffer for CSV later
                 data_log.append([elapsed_total, speed_left_mps, speed_right_mps, 
-                                 total_dist_left, total_dist_right, pwm_L, pwm_R])
+                                 total_dist_left, total_dist_right, pwm_L, pwm_R, current_target])
             
             # Update previous values for next loop
             prev_odo1, prev_odo2 = curr_odo1, curr_odo2
@@ -177,10 +176,10 @@ if __name__ == "__main__":
         with open(filepath, mode='w', newline='') as file:
             writer = csv.writer(file)
             writer.writerow(['Time_s', 'Left_Speed_m_s', 'Right_Speed_m_s', 
-                             'Left_Dist_m', 'Right_Dist_m', 'PWM_Left', 'PWM_Right'])
+                             'Left_Dist_m', 'Right_Dist_m', 'PWM_Left', 'PWM_Right', 'Target_Speed'])
             
             for row in data_log:
                 writer.writerow([f"{row[0]:.4f}", f"{row[1]:.4f}", f"{row[2]:.4f}", 
-                                 f"{row[3]:.4f}", f"{row[4]:.4f}", f"{row[5]:.1f}", f"{row[6]:.1f}"])
+                                 f"{row[3]:.4f}", f"{row[4]:.4f}", f"{row[5]:.1f}", f"{row[6]:.1f}", f"{row[7]:.4f}"])
                 
         print(f"Data safely saved to:\n{filepath}")

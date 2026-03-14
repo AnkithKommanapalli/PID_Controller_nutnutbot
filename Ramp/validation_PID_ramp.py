@@ -4,14 +4,14 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 # --- CONFIGURATION ---
-file_path = "Basic_PID_and_ramp/PID_0.5mps_dur6.0s_ramp.csv"  
+file_path = "Ramp/PID_0.5mps_dur6.0s_ramp.csv"  
 SPIKE_THRESHOLD = 0.1      # Max allowed speed jump (m/s) between consecutive ticks
 SPEED_WINDOW_SIZE = 60      # Moving average window for speed (0 or 1 = disabled)
 
-# Extract reference speed from the filename using regex
+# Extract reference speed from the filename using regex (used for title)
 filename = os.path.basename(file_path)
 speed_match = re.search(r'pid_speed_([\d\.]+)mps', filename)
-ref_speed_val = 0.5
+ref_speed_val = float(speed_match.group(1)) if speed_match else 0.5
 
 # Helper function to remove physically impossible spikes
 def remove_spikes(data, threshold):
@@ -37,23 +37,27 @@ speed_left = []
 speed_right = []
 pwm_left = []
 pwm_right = []
+target_speed = [] # Added to hold dynamic target speeds
 
 try:
     with open(file_path, 'r') as file:
-        lines = file.readlines()
-
-    # Extract the data
-    for line in lines[1:]:
-        parts = line.strip().split(',')
-        if len(parts) >= 7: 
-            try:
-                times.append(float(parts[0]))
-                speed_left.append(float(parts[1]))
-                speed_right.append(float(parts[2]))
-                pwm_left.append(float(parts[5]))
-                pwm_right.append(float(parts[6]))
-            except ValueError:
-                continue
+        # Read and skip the header line
+        header = file.readline()
+        
+        # Extract the data
+        for line in file:
+            parts = line.strip().split(',')
+            if len(parts) >= 8: # Expecting 8 columns based on the new format
+                try:
+                    times.append(float(parts[0]))
+                    speed_left.append(float(parts[1]))
+                    speed_right.append(float(parts[2]))
+                    # Indices 3 and 4 are Dist_m, skipping them for this plot
+                    pwm_left.append(float(parts[5]))
+                    pwm_right.append(float(parts[6]))
+                    target_speed.append(float(parts[7]))
+                except ValueError:
+                    continue
 
     # 1. Remove spikes from the speed data
     speed_left_clean = remove_spikes(speed_left, SPIKE_THRESHOLD)
@@ -76,9 +80,8 @@ try:
     line1, = ax1.plot(times_speed, speed_left_final, label='Left Wheel Speed', color='blue', linewidth=2)
     line2, = ax1.plot(times_speed, speed_right_final, label='Right Wheel Speed', color='red', linewidth=2)
     
-    # 2. Plot the reference speed
-    line3 = ax1.axhline(y=ref_speed_val, color='green', linestyle='--', linewidth=2, 
-                        label=f'Reference Speed ({ref_speed_val} m/s)')
+    # 2. Plot the dynamic target speed (uses full times array)
+    line3, = ax1.plot(times, target_speed, label='Target Speed', color='green', linestyle='--', linewidth=2)
 
     # Formatting for primary Y-axis
     ax1.set_xlabel('Time (s)', fontsize=12)
@@ -87,7 +90,7 @@ try:
     
     max_speed = max(max(speed_left_final) if len(speed_left_final) > 0 else 0, 
                     max(speed_right_final) if len(speed_right_final) > 0 else 0, 
-                    ref_speed_val)
+                    max(target_speed) if len(target_speed) > 0 else ref_speed_val)
     ax1.set_ylim(0, max_speed * 1.2 if max_speed > 0 else 1)
     ax1.grid(True, linestyle='--', alpha=0.7)
 
@@ -110,7 +113,7 @@ try:
     ax1.legend(lines_all, labels_all, loc='upper center', bbox_to_anchor=(0.5, -0.12), ncol=3)
 
     # Title
-    plt.title(f'PID Validation (Reference Speed: {ref_speed_val} m/s)', fontsize=14, fontweight='bold')
+    plt.title(f'PID Validation (Max Reference Speed: {ref_speed_val} m/s)', fontsize=14, fontweight='bold')
     
     plt.subplots_adjust(bottom=0.25) 
     
