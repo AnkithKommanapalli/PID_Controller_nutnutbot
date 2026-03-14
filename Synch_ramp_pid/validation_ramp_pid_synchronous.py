@@ -4,7 +4,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 # --- CONFIGURATION ---
-file_path = "SYNCH_RAMP_PID_0.5mps_8.0s_Ramp_run1.csv"  
+file_path = "Synch_ramp_pid/SYNCH_RAMP_PID_0.5mps_8.0s_Ramp_run1.csv"  
 SPIKE_THRESHOLD = 0.2      # Max allowed speed jump (m/s) between consecutive ticks
 SPEED_WINDOW_SIZE = 70      # Moving average window for speed (0 or 1 = disabled)
 
@@ -175,8 +175,14 @@ try:
     # Title
     plt.title(f'PID Validation (Reference Speed: {ref_speed_val} m/s)', fontsize=14, fontweight='bold')
     
-    # Show the graph
     plt.subplots_adjust(bottom=0.25) 
+
+    # Save the plot automatically
+    save_path = os.path.splitext(file_path)[0] + ".png"
+    plt.savefig(save_path, dpi=300, bbox_inches='tight')
+    print(f"Plot saved successfully to: {save_path}")
+
+    # Show the graph
     plt.show()
 
 except FileNotFoundError:
