@@ -7,6 +7,9 @@
 #include <cmath>
 #include <csignal>
 #include <cstdlib> // Required for checking environment variables
+#include <sstream>
+#include <iomanip>
+#include <algorithm>
 
 // --- SIGNAL HANDLING FOR CTRL+C EXIT ---
 volatile sig_atomic_t stop_program = 0;
@@ -43,9 +46,10 @@ int main()
     }
 
     // --- STABILITY SETTINGS ---
-    cap.set(cv::CAP_PROP_FRAME_WIDTH, 640);
-    cap.set(cv::CAP_PROP_FRAME_HEIGHT, 480);
-    cap.set(cv::CAP_PROP_FPS, 20);
+    // Set camera resolution to 1280x720 (720p)
+    cap.set(cv::CAP_PROP_FRAME_WIDTH, 1280);
+    cap.set(cv::CAP_PROP_FRAME_HEIGHT, 720);
+    cap.set(cv::CAP_PROP_FPS, 60);
     cap.set(cv::CAP_PROP_BUFFERSIZE, 1);
 
     // --- 3D POSE CALIBRATION ---
@@ -61,15 +65,18 @@ int main()
         cv::aruco::getPredefinedDictionary(cv::aruco::DICT_4X4_50);
     cv::Ptr<cv::aruco::DetectorParameters> parameters = cv::aruco::DetectorParameters::create();
 
-    // Visual Box Settings
-    cv::Point2f screenCenter(320.0f, 240.0f);
-    int boxWidth = 300;  
-    int boxHeight = 100; 
+    // Visual Box Settings (centered for 1280x720)
+    cv::Point2f screenCenter(640.0f, 360.0f);
+    // Scale box size from 640x480 (400x300) to 1280x720
+    int boxWidth = 800;   // 400 * (1280/640)
+    int boxHeight = 250;  // 300 * (720/480)
     cv::Rect overlayBox(screenCenter.x - boxWidth / 2, screenCenter.y - boxHeight / 2, boxWidth, boxHeight);
 
-    // Tolerances
-    double max_offset_meters = 0.01; 
-    double max_angle_degrees = 30.0; 
+    // --- UPDATED TOLERANCES ---
+    // Offset is now used mainly for display; alignment is based on
+    // marker being inside the overlay box + orientation constraints.
+    double max_angle_horizontal_deg = 10.0; // red line ~horizontal within ±25° (0 or 180)
+    double max_angle_vertical_deg   = 10.0; // green line ~vertical within ±25° (±90)
 
     while (!stop_program) {
         cv::Mat frame;
@@ -97,41 +104,106 @@ int main()
             cv::aruco::estimatePoseSingleMarkers(corners, markerLength, cameraMatrix, distCoeffs, rvecs, tvecs);
 
             bool isAligned = false;
+            double distance_m = -1.0; // closest marker distance in meters
 
             for (size_t i = 0; i < ids.size(); i++) {
+                int markerId = ids[i];
                 cv::drawFrameAxes(frame, cameraMatrix, distCoeffs, rvecs[i], tvecs[i], markerLength * 0.5f);
 
                 double offset_x = tvecs[i][0];
                 double offset_y = tvecs[i][1];
                 double physical_offset = std::sqrt(offset_x * offset_x + offset_y * offset_y);
 
+                // Use Z-component of translation as forward distance (meters)
+                double current_distance_m = tvecs[i][2];
+                if (distance_m < 0.0 || current_distance_m < distance_m) {
+                    distance_m = current_distance_m;
+                }
+
                 cv::Point2f pt0 = corners[i][0]; 
                 cv::Point2f pt1 = corners[i][1]; 
+                cv::Point2f pt2 = corners[i][2]; 
+                cv::Point2f pt3 = corners[i][3]; 
                 
-                double dx = pt1.x - pt0.x;
-                double dy = pt1.y - pt0.y;
-                double angle_deg = std::atan2(dy, dx) * 180.0 / CV_PI;
-                double angle_diff = angle_deg - 0.0; 
+                // --- ORIENTATION MEASURES ---
+                // Top edge (pt0 -> pt1) should be "red" and ~horizontal
+                double dx_h = pt1.x - pt0.x;
+                double dy_h = pt1.y - pt0.y;
+                double angle_h_deg = std::atan2(dy_h, dx_h) * 180.0 / CV_PI; // 0 or 180 is horizontal
+
+                // Reduce angle to [0,180] then measure distance to 0/180
+                double angle_h_abs = std::fabs(angle_h_deg);
+                double angle_h_mod = std::fmod(angle_h_abs, 180.0);
+                double diff_h = std::min(angle_h_mod, 180.0 - angle_h_mod);
+                bool isHorizontal = (diff_h <= max_angle_horizontal_deg);
+
+                // Left edge (pt0 -> pt3) should be "green" and ~vertical (±90°)
+                double dx_v = pt3.x - pt0.x;
+                double dy_v = pt3.y - pt0.y;
+                double angle_v_deg = std::atan2(dy_v, dx_v) * 180.0 / CV_PI;
+                double diff_v = std::fabs(std::fabs(angle_v_deg) - 90.0);
+                bool isVertical = (diff_v <= max_angle_vertical_deg);
 
                 cv::Point2f ref_pt = pt0 + cv::Point2f(60, 0); 
                 cv::line(frame, pt0, ref_pt, cv::Scalar(0, 255, 255), 2, cv::LINE_AA); 
                 cv::line(frame, pt0, pt1, cv::Scalar(255, 0, 255), 2, cv::LINE_AA); 
                 
-                std::string onBlockAngleText = std::to_string((int)angle_deg) + " deg";
+                // Show horizontal angle on the marker for quick visual debug
+                std::string onBlockAngleText = std::to_string((int)angle_h_deg) + " deg";
                 cv::putText(frame, onBlockAngleText, pt0 + cv::Point2f(-10, -10), cv::FONT_HERSHEY_SIMPLEX, 0.6, cv::Scalar(0, 255, 255), 2);
 
-                bool isCentered = (physical_offset <= max_offset_meters);
-                bool isStraight = (std::abs(angle_deg) <= max_angle_degrees);
+                // Marker center in image coordinates
+                cv::Point2f markerCenter = (pt0 + pt1 + pt2 + pt3) * 0.25f;
+                bool inBox = overlayBox.contains(markerCenter);
 
-                if (isCentered && isStraight) {
+                // Alignment condition: valid ID (36 or 47) + in box around origin + red ~horizontal + green ~vertical
+                bool validId = (markerId == 36 || markerId == 47);
+                if (validId && inBox && isHorizontal && isVertical) {
                     isAligned = true;
                 }
 
                 std::string offsetText = "Offset: " + std::to_string(physical_offset * 100.0).substr(0, 4) + " cm";
-                std::string diffText = "Angle Diff: " + std::to_string(angle_diff).substr(0, 5) + " deg";
+                std::string diffText = "H: " + std::to_string(diff_h).substr(0, 4) + " V: " + std::to_string(diff_v).substr(0, 4);
 
                 cv::putText(frame, offsetText, cv::Point(20, 90), cv::FONT_HERSHEY_SIMPLEX, 0.8, cv::Scalar(255, 255, 255), 2);
                 cv::putText(frame, diffText, cv::Point(400, 40), cv::FONT_HERSHEY_SIMPLEX, 0.6, cv::Scalar(255, 255, 255), 2);
+            }
+
+            // Draw distance text in bottom-right of the overlay box
+            if (distance_m > 0.0) {
+                std::ostringstream oss;
+                oss << std::fixed << std::setprecision(2) << distance_m;
+                std::string distText = "Dist: " + oss.str() + " m";
+
+                int baseline = 0;
+                cv::Size textSize = cv::getTextSize(distText, cv::FONT_HERSHEY_SIMPLEX, 0.6, 2, &baseline);
+                cv::Point textOrg(
+                    overlayBox.x + overlayBox.width - textSize.width - 10,
+                    overlayBox.y + overlayBox.height - 10
+                );
+
+                cv::putText(frame, distText, textOrg, cv::FONT_HERSHEY_SIMPLEX, 0.6, cv::Scalar(255, 255, 255), 2);
+            }
+
+            // --- ID COLOR / VALIDITY LABEL (bottom-left) ---
+            if (!ids.empty()) {
+                int mainId = ids[0];
+                std::string idText;
+                cv::Scalar idColor;
+
+                if (mainId == 36) {
+                    idText = "ID 36: BLUE";
+                    idColor = cv::Scalar(255, 0, 0); // Blue in BGR
+                } else if (mainId == 47) {
+                    idText = "ID 47: YELLOW";
+                    idColor = cv::Scalar(0, 255, 255); // Yellow in BGR
+                } else {
+                    idText = "ID INVALID";
+                    idColor = cv::Scalar(0, 0, 255); // Red
+                }
+
+                cv::Point idOrg(20, frame.rows - 20);
+                cv::putText(frame, idText, idOrg, cv::FONT_HERSHEY_SIMPLEX, 0.8, idColor, 2);
             }
 
             if (isAligned) {
