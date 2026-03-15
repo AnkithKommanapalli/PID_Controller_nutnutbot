@@ -9,21 +9,6 @@ TARGET_SPEED_MPS = 0.4  # Target speed in m/s
 DURATION = 4.0          # Maximum duration of the test in seconds
 LOOP_DELAY = 0.001       # Delay between readings (0.05s = 20 Hz)
 
-# --- PI CONTROLLER CONSTANTS ---
-# Left Motor
-# Kp_L = 1400
-# Ki_L = 3846
-# # Right Motor
-# Kp_R = 1227
-# Ki_R = 5555
-
-
-# Kp_R = 657.7
-# Ki_R= 1923.1
-# Kp_L= 725.9
-# Ki_L = 2777.7
-
-
 
 Kp_R = 749
 Ki_R= 2637
